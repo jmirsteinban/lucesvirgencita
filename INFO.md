@@ -229,7 +229,7 @@ Mensajes principales:
 ### 7.1 Firmware principal
 
 ```powershell
-& "C:\Users\jmirs\.platformio\penv\Scripts\platformio.exe" run -e nanoatmega328 -t upload
+& "C:\Users\jmirs\.platformio\penv\Scripts\platformio.exe" run -e virgencitaluces -t upload
 ```
 
 ### 7.2 Monitor serial
@@ -242,7 +242,7 @@ Mensajes principales:
 
 Definidos en `platformio.ini`:
 
-1. `nanoatmega328`
+1. `virgencitaluces`
 2. `test_simple_candela`
 3. `test_estatic`
 4. `test_fadeinout`
@@ -254,4 +254,3 @@ Definidos en `platformio.ini`:
 2. Doc tecnica: `INFO.md`
 3. Manual usuario: `MANUAL_USUARIO.md`
 4. Configuracion PlatformIO: `platformio.ini`
-

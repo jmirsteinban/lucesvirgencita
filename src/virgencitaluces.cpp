@@ -26,7 +26,7 @@ uint8_t ledBrightness[6] = {0, 0, 0, 0, 0, 0};
 // Modos de presentación
 // ==============================================================================
 enum Mode {
-  MODE_1_APAGADO = 0,
+  MODE_1_CONTEMPLATIVO = 0,
   MODE_2_SOLO_CANDELITA,
   MODE_3_CANDELITA_PASTOR,
   MODE_4_CANDELITA_PASTOR_VIRGEN,
@@ -35,7 +35,7 @@ enum Mode {
   MODE_COUNT
 };
 
-Mode currentMode = MODE_1_APAGADO;
+Mode currentMode = MODE_1_CONTEMPLATIVO;
 
 // Control de tiempo
 unsigned long lastDebounceTime = 0;
@@ -73,6 +73,50 @@ FadeState fades[6];
 const uint8_t DEFAULT_CARA_MIN_PCT = 40;
 const uint8_t DEFAULT_CARA_MAX_PCT = 60;
 const unsigned long DEFAULT_CARA_SPEED_MS = 40; // ms
+// Modo 1 - Contemplativo (3 variantes seleccionables)
+struct Mode1Profile {
+  const char* name;
+  uint8_t canBasePct;
+  uint8_t canMovePct;
+  uint8_t caraBaseMinPct;
+  uint8_t caraBaseMaxPct;
+  uint8_t caraMoveMinPct;
+  uint8_t caraMoveMaxPct;
+  unsigned long caraBaseTargetMinMs;
+  unsigned long caraBaseTargetMaxMs;
+  unsigned long caraMoveTargetMinMs;
+  unsigned long caraMoveTargetMaxMs;
+  uint8_t caraBaseStepMinPct;
+  uint8_t caraBaseStepMaxPct;
+  uint8_t caraMoveStepMinPct;
+  uint8_t caraMoveStepMaxPct;
+  unsigned long caraBaseStepIntervalMs;
+  unsigned long caraMoveStepIntervalMs;
+  uint8_t triadBasePct;
+  uint8_t triadPeakBasePct;
+  unsigned long triadBasePeriodMs;
+  uint8_t triadMoveBasePct;
+  uint8_t triadMovePeakPct;
+  unsigned long triadMovePeriodMs;
+};
+
+const Mode1Profile MODE1_PROFILES[] = {
+  // 0 - Contemplativo profundo (muy sereno)
+  {"Contemplativo", 25, 60, 14, 26, 28, 52, 1100, 2500, 420, 1100, 1, 2, 1, 2, 55, 35, 2, 16, 11000, 6, 38, 4500},
+  // 1 - Balanceado (RECOMENDADO)
+  {"Balanceado", 35, 75, 18, 32, 35, 65, 900, 2200, 320, 900, 1, 2, 1, 3, 45, 28, 3, 22, 9000, 8, 55, 3600},
+  // 2 - Vivo (mas presencia en movimiento)
+  {"Vivo", 45, 90, 22, 40, 40, 78, 700, 1700, 220, 700, 1, 3, 2, 4, 30, 20, 5, 30, 7000, 12, 75, 2600},
+};
+const uint8_t MODE1_PROFILE_COUNT = sizeof(MODE1_PROFILES) / sizeof(MODE1_PROFILES[0]);
+const uint8_t MODE1_PROFILE_INDEX = 1; // 0=Contemplativo, 1=Balanceado, 2=Vivo
+
+const Mode1Profile& getMode1Profile() {
+  uint8_t idx = MODE1_PROFILE_INDEX;
+  if (idx >= MODE1_PROFILE_COUNT) idx = 0;
+  return MODE1_PROFILES[idx];
+}
+
 const uint8_t MODE5_CARA_MIN_PCT = 40;
 const uint8_t MODE5_CARA_MAX_PCT = 90;
 const unsigned long MODE5_CARA_SPEED_MS = 35; // ms
@@ -102,6 +146,16 @@ bool randomFlashOn[6] = {false, false, false, false, false, false};
 unsigned long randomFlashEndAt[6] = {0,0,0,0,0,0};
 unsigned long randomFlashNextCheckAt[6] = {0,0,0,0,0,0};
 uint8_t randomFlashPeakPct[6] = {0,0,0,0,0,0};
+
+// Deriva organica (por LED): brillo no periodico con targets aleatorios
+struct OrganicDriftState {
+  uint8_t currentPct;
+  uint8_t targetPct;
+  unsigned long nextTargetAt;
+  unsigned long lastStepAt;
+  bool initialized;
+};
+OrganicDriftState organicDrift[6] = {};
 
 // ==============================================================================
 // Funciones auxiliares
@@ -181,6 +235,15 @@ void disableRandomFlashEffect(uint8_t idx) {
   randomFlashEndAt[idx] = 0;
   randomFlashNextCheckAt[idx] = 0;
   randomFlashPeakPct[idx] = 0;
+}
+
+void resetOrganicDriftState(uint8_t idx) {
+  if (idx >= LED_COUNT) return;
+  organicDrift[idx].currentPct = 0;
+  organicDrift[idx].targetPct = 0;
+  organicDrift[idx].nextTargetAt = 0;
+  organicDrift[idx].lastStepAt = 0;
+  organicDrift[idx].initialized = false;
 }
 
 // Efecto general: LED tenue (basePct) con destellos altos aleatorios.
@@ -292,6 +355,101 @@ void applySingleBreathing(uint8_t idx, uint8_t minPct, uint8_t maxPct, unsigned 
   setLedStaticPercent(idx, pct);
 }
 
+// Efecto nuevo: deriva organica (sin ciclo fijo).
+void applyOrganicDrift(
+  uint8_t idx,
+  uint8_t minPct,
+  uint8_t maxPct,
+  unsigned long targetMinMs,
+  unsigned long targetMaxMs,
+  uint8_t stepMinPct,
+  uint8_t stepMaxPct,
+  unsigned long stepIntervalMs
+) {
+  if (idx >= LED_COUNT) return;
+  minPct = constrain(minPct, 0, 100);
+  maxPct = constrain(maxPct, 0, 100);
+  if (minPct > maxPct) {
+    uint8_t t = minPct;
+    minPct = maxPct;
+    maxPct = t;
+  }
+  if (targetMinMs < 60) targetMinMs = 60;
+  if (targetMaxMs < targetMinMs) targetMaxMs = targetMinMs;
+  stepMinPct = constrain(stepMinPct, 1, 20);
+  stepMaxPct = constrain(stepMaxPct, stepMinPct, 20);
+  if (stepIntervalMs < 10) stepIntervalMs = 10;
+
+  unsigned long now = millis();
+  if (!organicDrift[idx].initialized) {
+    uint8_t start = (uint8_t)random(minPct, maxPct + 1);
+    organicDrift[idx].currentPct = start;
+    organicDrift[idx].targetPct = start;
+    organicDrift[idx].nextTargetAt = now + random(targetMinMs, targetMaxMs + 1);
+    organicDrift[idx].lastStepAt = 0;
+    organicDrift[idx].initialized = true;
+  }
+
+  if (now >= organicDrift[idx].nextTargetAt) {
+    organicDrift[idx].targetPct = (uint8_t)random(minPct, maxPct + 1);
+    organicDrift[idx].nextTargetAt = now + random(targetMinMs, targetMaxMs + 1);
+  }
+
+  if (now - organicDrift[idx].lastStepAt < stepIntervalMs) {
+    setLedStaticPercent(idx, organicDrift[idx].currentPct);
+    return;
+  }
+  organicDrift[idx].lastStepAt = now;
+
+  uint8_t step = (uint8_t)random(stepMinPct, stepMaxPct + 1);
+  if (organicDrift[idx].currentPct < organicDrift[idx].targetPct) {
+    uint16_t next = organicDrift[idx].currentPct + step;
+    organicDrift[idx].currentPct = (next > organicDrift[idx].targetPct) ? organicDrift[idx].targetPct : (uint8_t)next;
+  } else if (organicDrift[idx].currentPct > organicDrift[idx].targetPct) {
+    int next = (int)organicDrift[idx].currentPct - step;
+    organicDrift[idx].currentPct = (next < organicDrift[idx].targetPct) ? organicDrift[idx].targetPct : (uint8_t)next;
+  }
+
+  setLedStaticPercent(idx, organicDrift[idx].currentPct);
+}
+
+// Efecto nuevo: halo circular en triada ATRA -> FDEP -> FIZO (ciclico).
+void applyTriadCircularHalo(uint8_t basePct, uint8_t peakPct, unsigned long periodMs) {
+  basePct = constrain(basePct, 0, 100);
+  peakPct = constrain(peakPct, 0, 100);
+  if (basePct > peakPct) {
+    uint8_t t = basePct;
+    basePct = peakPct;
+    peakPct = t;
+  }
+  if (periodMs < 1200) periodMs = 1200;
+
+  auto trianglePct = [](unsigned long tMs, unsigned long pMs, unsigned long offsetMs) -> uint8_t {
+    unsigned long ph = (tMs + offsetMs) % pMs;
+    unsigned long half = pMs / 2;
+    if (ph < half) return (uint8_t)((ph * 100UL) / half); // 0..100
+    return (uint8_t)(((pMs - ph) * 100UL) / half);         // 100..0
+  };
+
+  unsigned long now = millis();
+  unsigned long offset1 = 0;
+  unsigned long offset2 = periodMs / 3;
+  unsigned long offset3 = (periodMs * 2UL) / 3UL;
+  uint8_t span = peakPct - basePct;
+
+  uint8_t waveAtra = trianglePct(now, periodMs, offset1);
+  uint8_t waveFdep = trianglePct(now, periodMs, offset2);
+  uint8_t waveFizo = trianglePct(now, periodMs, offset3);
+
+  uint8_t atraPct = basePct + (uint8_t)((span * waveAtra) / 100UL);
+  uint8_t fdepPct = basePct + (uint8_t)((span * waveFdep) / 100UL);
+  uint8_t fizoPct = basePct + (uint8_t)((span * waveFizo) / 100UL);
+
+  setLedStaticPercent(5, atraPct); // ATRA
+  setLedStaticPercent(4, fdepPct); // FDEP
+  setLedStaticPercent(3, fizoPct); // FIZO
+}
+
 // Efecto "ola de mar" circular para Modo 6 base:
 // Fase A: ATRA sube mientras FIZO+FDEP bajan.
 // Fase B: FIZO+FDEP suben juntos mientras ATRA baja.
@@ -345,6 +503,8 @@ const char* getLedName(uint8_t index) {
 void allLedsOff() {
   for (uint8_t i = 0; i < LED_COUNT; i++) {
     disableRandomFlashEffect(i);
+    resetOrganicDriftState(i);
+    setFadeActive(i, false);
     setLedState(i, 0);
   }
 }
@@ -366,7 +526,7 @@ void printLedNames() {
 void describeCurrentMode(Mode m) {
   Serial.print(F(" > MODO ACTUAL: "));
   switch (m) {
-    case MODE_1_APAGADO: Serial.println(F("1 - APAGADO")); break;
+    case MODE_1_CONTEMPLATIVO: Serial.println(F("1 - CONTEMPLATIVO AURORA")); break;
     case MODE_2_SOLO_CANDELITA: Serial.println(F("2 - SOLO CANDELITA")); break;
     case MODE_3_CANDELITA_PASTOR: Serial.println(F("3 - CANDELITA + PASTOR")); break;
     case MODE_4_CANDELITA_PASTOR_VIRGEN: Serial.println(F("4 - CANDELITA + PASTOR + VIRGEN")); break;
@@ -379,9 +539,43 @@ void describeCurrentMode(Mode m) {
 void printModeProfile(Mode m, bool movement) {
   Serial.println(movement ? F("PERFIL MOVIMIENTO (30s)") : F("PERFIL BASE"));
   switch (m) {
-    case MODE_1_APAGADO:
-      Serial.println(F(" CAN1/CAN2: OFF"));
-      Serial.println(F(" CARA/FIZO/FDEP/ATRA: OFF"));
+    case MODE_1_CONTEMPLATIVO:
+      {
+        const Mode1Profile& p = getMode1Profile();
+        Serial.print(F(" VARIANTE M1: "));
+        Serial.println(p.name);
+      }
+      if (movement) {
+        const Mode1Profile& p = getMode1Profile();
+        Serial.print(F(" CAN1/CAN2: Candelita "));
+        Serial.print(p.canMovePct);
+        Serial.println(F("% (CAN2 con 20% menos tope)"));
+        Serial.print(F(" CARA: Deriva Organica "));
+        Serial.print(p.caraMoveMinPct);
+        Serial.print(F("%-"));
+        Serial.print(p.caraMoveMaxPct);
+        Serial.println(F("%"));
+        Serial.print(F(" HALO TRIADA: ATRA->FDEP->FIZO ("));
+        Serial.print(p.triadMoveBasePct);
+        Serial.print(F("%-"));
+        Serial.print(p.triadMovePeakPct);
+        Serial.println(F("%, ciclo rapido)"));
+      } else {
+        const Mode1Profile& p = getMode1Profile();
+        Serial.print(F(" CAN1/CAN2: Candelita "));
+        Serial.print(p.canBasePct);
+        Serial.println(F("% (CAN2 con 20% menos tope)"));
+        Serial.print(F(" CARA: Deriva Organica "));
+        Serial.print(p.caraBaseMinPct);
+        Serial.print(F("%-"));
+        Serial.print(p.caraBaseMaxPct);
+        Serial.println(F("%"));
+        Serial.print(F(" HALO TRIADA: ATRA->FDEP->FIZO ("));
+        Serial.print(p.triadBasePct);
+        Serial.print(F("%-"));
+        Serial.print(p.triadPeakBasePct);
+        Serial.println(F("%, ciclo lento)"));
+      }
       break;
 
     case MODE_2_SOLO_CANDELITA:
@@ -473,18 +667,37 @@ void printModeSnapshot() {
 
   // Volcado de valores segun modo
   switch (currentMode) {
-    case MODE_1_APAGADO:
-      for(int i=0; i<6; i++) { baseValues[i] = 0; moveValues[i] = 0; }
+    case MODE_1_CONTEMPLATIVO:
+      {
+        const Mode1Profile& p = getMode1Profile();
+        uint8_t caraBaseMid = (uint8_t)((p.caraBaseMinPct + p.caraBaseMaxPct) / 2);
+        uint8_t caraMoveMid = (uint8_t)((p.caraMoveMinPct + p.caraMoveMaxPct) / 2);
+        uint8_t triadBaseMid = (uint8_t)((p.triadBasePct + p.triadPeakBasePct) / 2);
+        uint8_t triadMoveMid = (uint8_t)((p.triadMoveBasePct + p.triadMovePeakPct) / 2);
+
+        baseValues[0] = percentToPwm(p.canBasePct);
+        moveValues[0] = percentToPwm(p.canMovePct);
+        baseValues[1] = (uint8_t)((uint16_t)baseValues[0] * 80 / 100);
+        moveValues[1] = (uint8_t)((uint16_t)moveValues[0] * 80 / 100);
+        baseValues[2] = percentToPwm(caraBaseMid);
+        moveValues[2] = percentToPwm(caraMoveMid);
+        baseValues[3] = percentToPwm(triadBaseMid);
+        moveValues[3] = percentToPwm(triadMoveMid);
+        baseValues[4] = percentToPwm(triadBaseMid);
+        moveValues[4] = percentToPwm(triadMoveMid);
+        baseValues[5] = percentToPwm(triadBaseMid);
+        moveValues[5] = percentToPwm(triadMoveMid);
+      }
       break;
     case MODE_2_SOLO_CANDELITA:
       baseValues[0] = 51;  moveValues[0] = 178;
-      baseValues[1] = 51;  moveValues[1] = 178;
+      baseValues[1] = 41;  moveValues[1] = 142;
       baseValues[2] = 13;  moveValues[2] = 127;
       for(int i=3; i<6; i++) { baseValues[i] = 0; moveValues[i] = 0; }
       break;
     case MODE_3_CANDELITA_PASTOR:
       baseValues[0] = 178; moveValues[0] = 230;
-      baseValues[1] = 178; moveValues[1] = 230;
+      baseValues[1] = 142; moveValues[1] = 184;
       baseValues[2] = 25;  moveValues[2] = 127;
       baseValues[3] = 127; moveValues[3] = 25;
       baseValues[4] = 102; moveValues[4] = 255;
@@ -492,7 +705,7 @@ void printModeSnapshot() {
       break;
     case MODE_4_CANDELITA_PASTOR_VIRGEN:
       baseValues[0] = 178; moveValues[0] = 230;
-      baseValues[1] = 178; moveValues[1] = 230;
+      baseValues[1] = 142; moveValues[1] = 184;
       baseValues[2] = 25;  moveValues[2] = 102;
       baseValues[3] = 25;  moveValues[3] = 204;
       baseValues[4] = 25;  moveValues[4] = 204;
@@ -500,7 +713,7 @@ void printModeSnapshot() {
       break;
     case MODE_5_CANDELITA_PASTOR_VIRGEN_CARA:
       baseValues[0] = 178; moveValues[0] = 204;
-      baseValues[1] = 178; moveValues[1] = 204;
+      baseValues[1] = 142; moveValues[1] = 163;
       baseValues[2] = 102; moveValues[2] = 204;
       baseValues[3] = 25;  moveValues[3] = 6;   // FIZO fade 0-5% (valor medio)
       baseValues[4] = 25;  moveValues[4] = 6;   // FDEP fade 0-5% (valor medio)
@@ -508,7 +721,7 @@ void printModeSnapshot() {
       break;
     case MODE_6_ENFASIS_VIRGEN:
       baseValues[0] = 178; moveValues[0] = 255;
-      baseValues[1] = 178; moveValues[1] = 255;
+      baseValues[1] = 142; moveValues[1] = 204;
       baseValues[2] = 153; moveValues[2] = 153;
       baseValues[3] = 41;  moveValues[3] = 76; // FIZO ola mar 8-24% (valor medio)
       baseValues[4] = 41;  moveValues[4] = 76; // FDEP ola mar 8-24% (valor medio)
@@ -664,9 +877,39 @@ void applyMode() {
   
   switch (currentMode) {
     
-    case MODE_1_APAGADO:
-      allLedsOff();
+    case MODE_1_CONTEMPLATIVO:
+      {
+      const Mode1Profile& p = getMode1Profile();
+      setLedFadeInOutActive(2, false);
+      if (movementActive) {
+        updateCandleFlicker(percentToPwm(p.canMovePct));
+        applyOrganicDrift(
+          2,
+          p.caraMoveMinPct,
+          p.caraMoveMaxPct,
+          p.caraMoveTargetMinMs,
+          p.caraMoveTargetMaxMs,
+          p.caraMoveStepMinPct,
+          p.caraMoveStepMaxPct,
+          p.caraMoveStepIntervalMs
+        );
+        applyTriadCircularHalo(p.triadMoveBasePct, p.triadMovePeakPct, p.triadMovePeriodMs);
+      } else {
+        updateCandleFlicker(percentToPwm(p.canBasePct));
+        applyOrganicDrift(
+          2,
+          p.caraBaseMinPct,
+          p.caraBaseMaxPct,
+          p.caraBaseTargetMinMs,
+          p.caraBaseTargetMaxMs,
+          p.caraBaseStepMinPct,
+          p.caraBaseStepMaxPct,
+          p.caraBaseStepIntervalMs
+        );
+        applyTriadCircularHalo(p.triadBasePct, p.triadPeakBasePct, p.triadBasePeriodMs);
+      }
       break;
+      }
     
     case MODE_2_SOLO_CANDELITA:
       if (movementActive) {
@@ -771,6 +1014,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println(F("\n=== VIRGO CITA LUCES - 6 MODOS ==="));
+  randomSeed((unsigned long)analogRead(A0) + micros());
   
   pinMode(BTN_PIN, INPUT_PULLUP);
   pinMode(PIR_PIN, INPUT);
@@ -801,7 +1045,7 @@ void setup() {
   configureLedFadeInOutPercent(5, DEFAULT_ATRA_M4_MIN_PCT, DEFAULT_ATRA_M4_MAX_PCT, DEFAULT_ATRA_M4_SPEED_MS);
   
   Serial.println(F("\nModos disponibles:"));
-  Serial.println(F("  1. APAGADO"));
+  Serial.println(F("  1. CONTEMPLATIVO AURORA"));
   Serial.println(F("  2. SOLO CANDELITA"));
   Serial.println(F("  3. CANDELITA + PASTOR"));
   Serial.println(F("  4. CANDELITA + PASTOR + VIRGEN"));

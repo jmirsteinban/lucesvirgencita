@@ -1,249 +1,257 @@
-﻿# Proyecto: Virgencita Luces
+# Proyecto Virgencita Luces - Documentacion Tecnica
 
-## Descripcion
+## 1. Resumen
 
-- Control de 6 LEDs en Arduino Nano para iluminar una estatuita de una virgen con pastorcita.
-- 6 modos de presentacion + submodos con deteccion de movimiento (PIR).
-- Control por boton: cada pulsacion cambia de modo.
-- Nombres cortos para cada LED (CAN1, CAN2, CARA, FIZO, FDEP, ATRA).
-- **Efecto candela realista:** CAN1 y CAN2 parpadean de forma independiente simulando llama.
+Firmware para Arduino Nano (ATmega328P) que controla 6 LEDs con:
 
----
+1. 6 modos de iluminacion.
+2. Submodo por movimiento PIR con ventana fija de 30 segundos.
+3. Efectos reutilizables (candelita, fade, respiracion, deriva organica, halo circular, destello aleatorio, soft-off).
 
-## Mapeo de pines
+Archivo principal:
 
-- PIN3 CAN1 Candelita 1
-- PIN5 CAN2 Candelita 2
-- PIN6 CARA Cara (Virgen)
-- PIN9 FIZO Frente Izq
-- PIN10 FDEP Frente Der Pastor (Pastor)
-- PIN11 ATRA Atras
+1. `src/virgencitaluces.cpp`
 
----
+## 2. Hardware
 
-## Especificacion de funcionamiento
+### 2.1 Mapeo de pines
 
-### Control del boton
+1. PIN3  -> CAN1 (Candelita 1)
+2. PIN5  -> CAN2 (Candelita 2)
+3. PIN6  -> CARA
+4. PIN9  -> FIZO (Frente Izq)
+5. PIN10 -> FDEP (Frente Der Pastor)
+6. PIN11 -> ATRA (Atras)
+7. PIN2  -> BTN (INPUT_PULLUP)
+8. PIN4  -> PIR (INPUT)
 
-- Pulsacion corta: cicla al siguiente modo (1 -> 2 -> ... -> 6 -> 1).
-- Debounce: 50 ms.
-- Deteccin de movimiento (PIR): imprime evento al iniciar y al finalizar por timeout.
+### 2.2 Comportamiento especial de CAN1/CAN2
 
----
+1. CAN1 y CAN2 usan el mismo efecto de candelita.
+2. CAN2 siempre trabaja con tope de brillo 20% menor que CAN1 para mayor naturalidad.
 
-## Efectos disponibles
+## 3. Logica de control
 
-### 1) Candela natural (CAN1 + CAN2)
+### 3.1 Cambio de modo
 
-Las candelitas (CAN1 y CAN2) simulan el movimiento de una llama real mediante parpadeo independiente:
+1. Pulsacion corta del boton avanza modo: `1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 1`.
+2. Debounce por software: 50 ms.
 
-- **CAN1** y **CAN2** tienen sus propios contadores y valores aleatorios
-- La funcion de candela recibe un **brillo maximo para CAN1** y calcula CAN2 con **20% menos maximo** (80% de CAN1)
-- Cada candelita parpadea con variaciones suaves y rapidas para evitar patron mecanico
-- Resultado: efecto realista de fuego que se mueve de forma natural
- **Actualizacion:** intervalo dinamico ~15-55ms en loop principal
+### 3.2 Movimiento PIR
 
-### 2) Fade in/out reutilizable (cualquier LED)
+1. Al detectar flanco de subida en PIR se activa submodo movimiento por 30 s.
+2. Si vuelve a disparar PIR dentro de esos 30 s, se ignora para no reiniciar la ventana.
+3. Al cumplir timeout vuelve al perfil base del modo activo.
 
-- Se configura por porcentaje de brillo minimo/maximo y velocidad.
-- API principal en firmware:
- - configureLedFadeInOutPercent(idx, minPct, maxPct, speedMs)
- - setLedFadeInOutActive(idx, true/false)
-- Actualmente usado en CARA para Modo 2 con movimiento.
+Constante:
 
-### 3) Respiracion devocional (CARA + ATRA)
+1. `MOVEMENT_TIMEOUT_MS = 30000`
 
-- CARA respira en ciclo suave (sube/baja).
-- ATRA sigue con desfase temporal e intensidad relativa menor.
-- Actualmente integrado en **Modo 6 (ENFASIS VIRGEN) durante movimiento**.
+## 4. Efectos implementados
 
-### 4) Estados estaticos por porcentaje
+### 4.1 Candelita natural
 
-- API para cualquier LED: setLedStaticPercent(idx, percent).
-- Facilita mantener modos por porcentaje sin calcular PWM manual.
+Funcion:
 
-### 5) Soft-off no bloqueante
+1. `updateCandleFlicker(maxValueCan1)`
 
-- Al apagar un LED, reduce brillo en pasos hasta 0 sin bloquear loop().
+Caracteristicas:
 
-## Definicion de Modos (6 modos)
+1. Variaciones aleatorias no mecanicas.
+2. Intervalo dinamico aproximado 15 a 55 ms.
+3. CAN2 = 80% del maximo de CAN1.
 
-Cada modo tiene dos comportamientos:
+### 4.2 Fade in/out reutilizable
 
-- **MODO BASE:** Comportamiento sin movimiento.
-- **MODO MOVIMIENTO:** Activado durante 30s al detectar PIR HIGH.
+Funciones:
 
- **Timeout de movimiento (30s):**
- Al detectar movimiento inicia submodo "MODO MOVIMIENTO" por 30s (timer independiente). Si hay mas movimiento durante esos 30s: se ignora. Pasados 30s: vuelve a modo base.
+1. `configureLedFadeInOutPercent(idx, minPct, maxPct, speedMs)`
+2. `setLedFadeInOutActive(idx, true/false)`
 
-### Modo 1: APAGADO
+### 4.3 Respiracion devocional CARA+ATRA
 
-- #### Base:
- NINGUNO (todo apagado)
-- #### Movimiento:
- NINGUNO (todo apagado)
+Funcion:
 
-### Modo 2: SOLO CANDELITA
+1. `applyDevotionalBreathing(caraMinPct, caraMaxPct, periodMs, delayMs, atraScalePct)`
 
-- #### Base:
- CAN1,2 - Funcion Candelita 20% Brillo
- CARA - Estatico 5% Brillo
-- #### Movimiento:
- CARA - Funcion FADE IN, FADE OUT Brillo MIN 40% Brillo MAX 60%
- CAN1,2 - Funcion Candelita 70% Brillo
+### 4.4 Respiracion simple por LED
 
-### Modo 3: CANDELITA + PASTOR
+Funcion:
 
-- #### Base:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 10% Brillo
- FIZO - Estatico 70% Brillo
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 90% Brillo
- CARA - Estatico 30% Brillo
- FIZO - Estatico 80% Brillo
+1. `applySingleBreathing(idx, minPct, maxPct, periodMs)`
 
-### Modo 4: CANDELITA + PASTOR + VIRGEN
+### 4.5 Deriva organica (nuevo)
 
-- #### Base:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 10% Brillo
- FIZO - Efecto tenue 10% + destello aleatorio alto
- FDEP - Efecto tenue 10% + destello aleatorio alto
- ATRA - Efecto tenue 10% + destello aleatorio alto
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 90% Brillo
- CARA - Estatico 40% Brillo
- FIZO - Estatico 80% Brillo
- FDEP - Estatico 80% Brillo
- ATRA - Funcion FADE IN, FADE OUT (0% a 100% Brillo)
+Funcion:
 
-### Modo 5: CANDELITA + PASTOR + VIRGEN SOLO CARA
+1. `applyOrganicDrift(...)`
 
-- #### Base:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 40% Brillo
- FIZO - Estatico 10% Brillo
- FDEP - Estatico 10% Brillo
- ATRA - Estatico 10% Brillo
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 80% Brillo
- CARA - Funcion FADE IN, FADE OUT (40% a 90% Brillo)
- FIZO - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
- FDEP - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
- ATRA - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
+Caracteristicas:
 
-### Modo 6: ENFASIS VIRGEN
+1. Sin onda fija periodica.
+2. Cambia objetivo en tiempos aleatorios.
+3. Avanza en pasos suaves con intervalo configurable.
 
-- #### Base:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 60% Brillo
- OLA MAR circular:
- ATRA - Oscila (10% a 30% Brillo)
- FIZO + FDEP - Oscilan juntos (8% a 24% Brillo)
- Secuencia ciclica: ATRA sube mientras FIZO/FDEP bajan, luego ATRA baja y FIZO/FDEP suben
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 100% Brillo
- CARA - Funcion Respiracion Devocional (40% a 80%)
- FIZO - Estatico 30% Brillo
- FDEP - Estatico 30% Brillo
- ATRA - Funcion Respiracion Devocional (desfasado y mas tenue que CARA)
+### 4.6 Halo circular triada (nuevo)
 
----
+Funcion:
 
-## Hardware / Requisitos
+1. `applyTriadCircularHalo(basePct, peakPct, periodMs)`
 
-- **Placa:** Arduino Nano (ATmega328P)
-- **Framework:** Arduino (PlatformIO)
-- **Plataforma:** atmelavr
-- **Conexiones:**
- - Botn: D2 GND (INPUT_PULLUP en cdigo)
- - PIR: D4 (INPUT)
- - LEDs: D3, D5, D6, D9, D10, D11
-- **Cable:** USB con datos (no solo carga) y drivers CH340/FTDI/CP210x
+Caracteristicas:
 
----
+1. Secuencia circular: ATRA -> FDEP -> FIZO -> ATRA.
+2. Sirve para fondo elegante con sensacion de rotacion.
 
-## Configuracin de PlatformIO
+### 4.7 Tenue + destello aleatorio
 
-- `upload_speed = 115200` (Optiboot nuevo)
-- `monitor_speed = 115200` (Serial monitor)
+Funcion:
 
----
+1. `applyRandomFlashTenue(...)`
 
-## Uso / Pruebas
+### 4.8 Onda mar circular (Modo 6 base)
 
-### Compilar y subir:
+Funcion:
+
+1. `applySeaWaveCircularMode6Base(...)`
+
+### 4.9 Soft-off no bloqueante
+
+Funcion:
+
+1. `updateSoftOffs()`
+
+Caracteristicas:
+
+1. Al apagar LED no cae en seco, baja por pasos.
+2. No bloquea loop principal.
+
+## 5. Modos actuales
+
+## 5.1 Modo 1 - CONTEMPLATIVO AURORA
+
+Nota: usa perfiles seleccionables.
+
+Selector:
+
+1. `MODE1_PROFILE_INDEX` en `src/virgencitaluces.cpp`.
+2. `0` Contemplativo
+3. `1` Balanceado (actual)
+4. `2` Vivo
+
+Perfil actual (`MODE1_PROFILE_INDEX = 1`):
+
+1. Base:
+1. CAN1/CAN2 candelita 35%
+2. CARA deriva organica 18% a 32%
+3. ATRA/FDEP/FIZO halo circular 3% a 22% (lento)
+2. Movimiento:
+1. CAN1/CAN2 candelita 75%
+2. CARA deriva organica 35% a 65%
+3. ATRA/FDEP/FIZO halo circular 8% a 55% (mas rapido)
+
+## 5.2 Modo 2 - SOLO CANDELITA
+
+1. Base:
+1. CAN1/CAN2 candelita 20%
+2. CARA estatico 5%
+3. FIZO/FDEP/ATRA apagados
+2. Movimiento:
+1. CAN1/CAN2 candelita 70%
+2. CARA fade 40% a 60%
+
+## 5.3 Modo 3 - CANDELITA + PASTOR
+
+1. Base:
+1. CAN1/CAN2 candelita 70%
+2. CARA estatico 10%
+3. FIZO respiracion 10% a 50%
+4. FDEP estatico 40%
+5. ATRA apagado
+2. Movimiento:
+1. CAN1/CAN2 candelita 90%
+2. CARA estatico 50%
+3. FIZO estatico 10%
+4. FDEP fade 5% a 100%
+5. ATRA apagado
+
+## 5.4 Modo 4 - CANDELITA + PASTOR + VIRGEN
+
+1. Base:
+1. CAN1/CAN2 candelita 70%
+2. CARA estatico 10%
+3. FIZO/FDEP/ATRA tenue 10% + destello aleatorio
+2. Movimiento:
+1. CAN1/CAN2 candelita 90%
+2. CARA estatico 40%
+3. FIZO estatico 80%
+4. FDEP estatico 80%
+5. ATRA fade 0% a 100%
+
+## 5.5 Modo 5 - VIRGEN SOLO CARA
+
+1. Base:
+1. CAN1/CAN2 candelita 70%
+2. CARA estatico 40%
+3. FIZO/FDEP/ATRA estatico 10%
+2. Movimiento:
+1. CAN1/CAN2 candelita 80%
+2. CARA fade 40% a 90%
+3. FIZO/FDEP/ATRA fade 0% a 5%
+
+## 5.6 Modo 6 - ENFASIS VIRGEN
+
+1. Base:
+1. CAN1/CAN2 candelita 70%
+2. CARA estatico 60%
+3. ATRA/FIZO/FDEP en onda mar circular
+2. Movimiento:
+1. CAN1/CAN2 candelita 100%
+2. CARA+ATRA respiracion devocional (ATRA desfasado y mas tenue)
+3. FIZO/FDEP estatico 30%
+
+## 6. Mensajes Serial
+
+Baudrate:
+
+1. `115200`
+
+Mensajes principales:
+
+1. Cambio de modo: snapshot con tabla base/movimiento.
+2. Deteccion de movimiento:
+1. `>>> MOVIMIENTO DETECTADO: SUBMODO ACTIVO 30s <<<`
+3. Fin de ventana:
+1. `>>> Timeout de movimiento (volviendo a modo base) <<<`
+
+## 7. Compilacion y carga
+
+### 7.1 Firmware principal
 
 ```powershell
-pio run --environment nanoatmega328 --target upload
+& "C:\Users\jmirs\.platformio\penv\Scripts\platformio.exe" run -e nanoatmega328 -t upload
 ```
 
-### Abrir monitor serial (115200):
+### 7.2 Monitor serial
 
 ```powershell
-pio device monitor -p COM19 -b 115200
+& "C:\Users\jmirs\.platformio\penv\Scripts\platformio.exe" device monitor -b 115200
 ```
 
-### Mensajes esperados por Serial:
+## 8. Entornos PlatformIO vigentes
 
-- Al pulsar boton: `--- Resumen de modo ---` + lista de brillos actuales
-- Al detectar movimiento: `>>> MOVIMIENTO DETECTADO <<<`
-- Al finalizar timeout: `>>> Fin de movimiento <<<`
+Definidos en `platformio.ini`:
 
----
+1. `nanoatmega328`
+2. `test_simple_candela`
+3. `test_estatic`
+4. `test_fadeinout`
+5. `test_respiracion_devocional`
 
-## Notas de desarrollo
+## 9. Archivos clave
 
-- Mensajes Serial solo en eventos (boton/movimiento), sin verbose loops.
-- **Candelitas independientes:** CAN1 y CAN2 tienen sus propios contadores para efecto natural de llama.
-- Timeout independiente: una sola ejecucin de 30s por evento de movimiento.
-- Modo base vuelve al cumplirse el timeout de 30s (independiente del nivel PIR).
-
-### Funcion FADE reutilizable
-
-Hemos implementado en el codigo una funcion `FADE` reutilizable que puede aplicarse a cualquier LED.
-
-Valores actuales para `CARA` en firmware principal:
-
-- Minimo: `DEFAULT_CARA_MIN_PCT = 40`
-- Maximo: `DEFAULT_CARA_MAX_PCT = 60`
-- Velocidad: `DEFAULT_CARA_SPEED_MS = 40`
-- Archivo: `src/virgencitaluces.cpp`
-
-Snippet de ejemplo (C++):
-
-```cpp
-// Configurar fade para LED indice 2 (CARA): 40% a 60%, velocidad 40ms
-configureLedFadeInOutPercent(2, 40, 60, 40);
-
-// En el loop o en applyMode(), activar / desactivar:
-setLedFadeInOutActive(2, true); // habilita la animacion
-setLedFadeInOutActive(2, false); // deshabilita
-```
-
-Esto permite reutilizar la misma logica de FADE para otros LEDs.
-
-### Prueba rpida de FADE (experimental)
-
-En `src/experiments/test_fade_suave.cpp` el modo AUTO usa:
-
-- Mnimo: `autoMin = 40`
-- Mximo: `autoMax = 140`
-
-Para cambiar ese rango, edita esas dos variables en ese archivo y vuelve a subir el entorno:
-
-```powershell
-pio run -e test_fade_suave -t upload -t monitor
-```
-
-### Transicin suave al apagar (Soft-off)
-
-El firmware ahora soporta una transicin no bloqueante al apagar cualquier LED (soft-off). En vez de apagar instantneamente, el brillo disminuye en pasos configurables hasta 0.
-
-- Parmetros por defecto: `SOFTOFF_STEP = 8` (decremento por paso) y `SOFTOFF_INTERVAL = 30 ms`.
-- Implementacin: no bloqueante la tarea avanza en `loop()` y no detiene otras animaciones.
-- Ejemplo de uso en cdigo: simplemente llamar a `setLedState(idx, 0)` activar la transicin suave para ese LED.
-
-Si quieres personalizar la velocidad o el paso, modifica `SOFTOFF_STEP` y `SOFTOFF_INTERVAL` en `src/virgencitaluces.cpp`.
+1. Firmware principal: `src/virgencitaluces.cpp`
+2. Doc tecnica: `INFO.md`
+3. Manual usuario: `MANUAL_USUARIO.md`
+4. Configuracion PlatformIO: `platformio.ini`
 

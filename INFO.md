@@ -3,7 +3,7 @@
 ## Descripcion
 
 - Control de 6 LEDs en Arduino Nano para iluminar una estatuita de una virgen con pastorcita.
-- 9 modos de presentacion + submodos con deteccion de movimiento (PIR).
+- 6 modos de presentacion + submodos con deteccion de movimiento (PIR).
 - Control por boton: cada pulsacion cambia de modo.
 - Nombres cortos para cada LED (CAN1, CAN2, CARA, FIZO, FDEP, ATRA).
 - **Efecto candela realista:** CAN1 y CAN2 parpadean de forma independiente simulando llama.
@@ -15,8 +15,8 @@
 - PIN3 CAN1 Candelita 1
 - PIN5 CAN2 Candelita 2
 - PIN6 CARA Cara (Virgen)
-- PIN9 FIZO Frente Izq Oba/Pastor
-- PIN10 FDEP Frente Der Pastor
+- PIN9 FIZO Frente Izq
+- PIN10 FDEP Frente Der Pastor (Pastor)
 - PIN11 ATRA Atras
 
 ---
@@ -25,7 +25,7 @@
 
 ### Control del boton
 
-- Pulsacion corta: cicla al siguiente modo (1 -> 2 -> ... -> 9 -> 1).
+- Pulsacion corta: cicla al siguiente modo (1 -> 2 -> ... -> 6 -> 1).
 - Debounce: 50 ms.
 - Deteccin de movimiento (PIR): imprime evento al iniciar y al finalizar por timeout.
 
@@ -55,7 +55,7 @@ Las candelitas (CAN1 y CAN2) simulan el movimiento de una llama real mediante pa
 
 - CARA respira en ciclo suave (sube/baja).
 - ATRA sigue con desfase temporal e intensidad relativa menor.
-- Actualmente integrado en **Modo 8 (SUAVE) durante movimiento**.
+- Actualmente integrado en **Modo 6 (ENFASIS VIRGEN) durante movimiento**.
 
 ### 4) Estados estaticos por porcentaje
 
@@ -66,7 +66,7 @@ Las candelitas (CAN1 y CAN2) simulan el movimiento de una llama real mediante pa
 
 - Al apagar un LED, reduce brillo en pasos hasta 0 sin bloquear loop().
 
-## Definicion de Modos (9 modos)
+## Definicion de Modos (6 modos)
 
 Cada modo tiene dos comportamientos:
 
@@ -87,6 +87,7 @@ Cada modo tiene dos comportamientos:
 
 - #### Base:
  CAN1,2 - Funcion Candelita 20% Brillo
+ CARA - Estatico 5% Brillo
 - #### Movimiento:
  CARA - Funcion FADE IN, FADE OUT Brillo MIN 40% Brillo MAX 60%
  CAN1,2 - Funcion Candelita 70% Brillo
@@ -107,15 +108,15 @@ Cada modo tiene dos comportamientos:
 - #### Base:
  CAN1,2 - Funcion Candelita 70% Brillo
  CARA - Estatico 10% Brillo
- FIZO - Estatico 60% Brillo
- FDEP - Estatico 60% Brillo
- ATRA - Estatico 70% Brillo
+ FIZO - Efecto tenue 10% + destello aleatorio alto
+ FDEP - Efecto tenue 10% + destello aleatorio alto
+ ATRA - Efecto tenue 10% + destello aleatorio alto
 - #### Movimiento:
  CAN1,2 - Funcion Candelita 90% Brillo
  CARA - Estatico 40% Brillo
  FIZO - Estatico 80% Brillo
  FDEP - Estatico 80% Brillo
- ATRA - Estatico 80% Brillo
+ ATRA - Funcion FADE IN, FADE OUT (0% a 100% Brillo)
 
 ### Modo 5: CANDELITA + PASTOR + VIRGEN SOLO CARA
 
@@ -126,71 +127,27 @@ Cada modo tiene dos comportamientos:
  FDEP - Estatico 10% Brillo
  ATRA - Estatico 10% Brillo
 - #### Movimiento:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 80% Brillo
- FIZO - Estatico 10% Brillo
- FDEP - Estatico 10% Brillo
- ATRA - Estatico 80% Brillo
+ CAN1,2 - Funcion Candelita 80% Brillo
+ CARA - Funcion FADE IN, FADE OUT (40% a 90% Brillo)
+ FIZO - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
+ FDEP - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
+ ATRA - Funcion FADE IN, FADE OUT (0% a 5% Brillo, velocidad medio-rapida)
 
 ### Modo 6: ENFASIS VIRGEN
 
 - #### Base:
  CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 80% Brillo
- FIZO - Estatico 20% Brillo
- FDEP - Estatico 20% Brillo
- ATRA - Estatico 50% Brillo
+ CARA - Estatico 60% Brillo
+ OLA MAR circular:
+ ATRA - Oscila (10% a 30% Brillo)
+ FIZO + FDEP - Oscilan juntos (8% a 24% Brillo)
+ Secuencia ciclica: ATRA sube mientras FIZO/FDEP bajan, luego ATRA baja y FIZO/FDEP suben
 - #### Movimiento:
  CAN1,2 - Funcion Candelita 100% Brillo
- CARA - Estatico 100% Brillo
+ CARA - Funcion Respiracion Devocional (40% a 80%)
  FIZO - Estatico 30% Brillo
  FDEP - Estatico 30% Brillo
- ATRA - Estatico 80% Brillo
-
-### Modo 7: ENFASIS VIRGEN + PASTOR
-
-- #### Base:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Estatico 70% Brillo
- FIZO - Estatico 70% Brillo
- FDEP - Estatico 70% Brillo
- ATRA - Estatico 40% Brillo
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 100% Brillo
- CARA - Estatico 90% Brillo
- FIZO - Estatico 90% Brillo
- FDEP - Estatico 90% Brillo
- ATRA - Estatico 80% Brillo
-
-### Modo 8: SUAVE
-
-- #### Base:
- CAN1,2 - Funcion Candelita 50% Brillo
- CARA - Estatico 30% Brillo
- FIZO - Estatico 30% Brillo
- FDEP - Estatico 30% Brillo
- ATRA - Estatico 40% Brillo
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 70% Brillo
- CARA - Funcion Respiracion Devocional (30% a 50%)
- FIZO - Estatico 50% Brillo
- FDEP - Estatico 50% Brillo
  ATRA - Funcion Respiracion Devocional (desfasado y mas tenue que CARA)
-
-### Modo 9: SUPER ACTIVO
-
-- #### Base:
- CAN1,2 - Funcion Candelita 80% Brillo
- CARA - Estatico 70% Brillo
- FIZO - Estatico 80% Brillo
- FDEP - Estatico 80% Brillo
- ATRA - Estatico 80% Brillo
-- #### Movimiento:
- CAN1,2 - Funcion Candelita 100% Brillo
- CARA - Estatico 100% Brillo
- FIZO - Estatico 100% Brillo
- FDEP - Estatico 100% Brillo
- ATRA - Estatico 100% Brillo
 
 ---
 

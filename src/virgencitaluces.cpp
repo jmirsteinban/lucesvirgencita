@@ -6,8 +6,8 @@
  PIN3  — CAN1 — Candelita 1 (índice 0)
  PIN5  — CAN2 — Candelita 2 (índice 1)
  PIN6  — CARA — Cara (Virgen) (índice 2)
- PIN9  — FIZO — Frente Izq Oba/Pastor (índice 3)
- PIN10 — FDEP — Frente Der Pastor (índice 4)
+ PIN9  — FIZO — Frente Izq (índice 3)
+ PIN10 — FDEP — Frente Der Pastor (Pastor) (índice 4)
  PIN11 — ATRA — Atrás (índice 5)
 */
 
@@ -32,9 +32,6 @@ enum Mode {
   MODE_4_CANDELITA_PASTOR_VIRGEN,
   MODE_5_CANDELITA_PASTOR_VIRGEN_CARA,
   MODE_6_ENFASIS_VIRGEN,
-  MODE_7_ENFASIS_VIRGEN_PASTOR,
-  MODE_8_SUAVE,
-  MODE_9_SUPER_ACTIVO,
   MODE_COUNT
 };
 
@@ -76,17 +73,35 @@ FadeState fades[6];
 const uint8_t DEFAULT_CARA_MIN_PCT = 40;
 const uint8_t DEFAULT_CARA_MAX_PCT = 60;
 const unsigned long DEFAULT_CARA_SPEED_MS = 40; // ms
-const uint8_t DEVOTIONAL_BREATH_CARA_MIN_PCT = 30;
-const uint8_t DEVOTIONAL_BREATH_CARA_MAX_PCT = 50;
-const unsigned long DEVOTIONAL_BREATH_PERIOD_MS = 4200;
-const unsigned long DEVOTIONAL_BREATH_DELAY_MS = 450;
-const uint8_t DEVOTIONAL_BREATH_ATRA_SCALE_PCT = 70;
+const uint8_t MODE5_CARA_MIN_PCT = 40;
+const uint8_t MODE5_CARA_MAX_PCT = 90;
+const unsigned long MODE5_CARA_SPEED_MS = 35; // ms
+const uint8_t MODE5_FIZO_FDEP_MIN_PCT = 0;
+const uint8_t MODE5_FIZO_FDEP_MAX_PCT = 5;
+const unsigned long MODE5_FIZO_FDEP_SPEED_MS = 32; // ms (medio-rapido)
+const uint8_t MODE6_OLA_ATRA_MIN_PCT = 10;
+const uint8_t MODE6_OLA_ATRA_MAX_PCT = 30;
+const uint8_t MODE6_OLA_GRUPO_MIN_PCT = 8;
+const uint8_t MODE6_OLA_GRUPO_MAX_PCT = 24;
+const unsigned long MODE6_OLA_PERIOD_MS = 5200; // ms
+const uint8_t DEFAULT_FDEP_MIN_PCT = 5;
+const uint8_t DEFAULT_FDEP_MAX_PCT = 100;
+const unsigned long DEFAULT_FDEP_SPEED_MS = 40; // ms (velocidad media)
+const uint8_t DEFAULT_ATRA_M4_MIN_PCT = 0;
+const uint8_t DEFAULT_ATRA_M4_MAX_PCT = 100;
+const unsigned long DEFAULT_ATRA_M4_SPEED_MS = 30;
 
 // Suavizado al apagar (soft-off) - no bloqueante, por LED
 bool softOffActive[6] = {false, false, false, false, false, false};
 unsigned long softOffLast[6] = {0,0,0,0,0,0};
 const uint8_t SOFTOFF_STEP = 8; // decrement per step
 const unsigned long SOFTOFF_INTERVAL = 30; // ms per step
+
+// Efecto tenue + destello aleatorio (por LED)
+bool randomFlashOn[6] = {false, false, false, false, false, false};
+unsigned long randomFlashEndAt[6] = {0,0,0,0,0,0};
+unsigned long randomFlashNextCheckAt[6] = {0,0,0,0,0,0};
+uint8_t randomFlashPeakPct[6] = {0,0,0,0,0,0};
 
 // ==============================================================================
 // Funciones auxiliares
@@ -141,20 +156,82 @@ void setLedStaticPercent(uint8_t idx, uint8_t percent) {
 // API reutilizable para cualquier LED: FADE IN/OUT por porcentaje y velocidad.
 // idx: 0..5 (CAN1, CAN2, CARA, FIZO, FDEP, ATRA)
 void configureLedFadeInOutPercent(uint8_t idx, uint8_t minPct, uint8_t maxPct, unsigned long speedMs) {
-  minPct = constrain(minPct, 1, 100);
-  maxPct = constrain(maxPct, 1, 100);
+  minPct = constrain(minPct, 0, 100);
+  maxPct = constrain(maxPct, 0, 100);
   if (minPct > maxPct) {
     uint8_t t = minPct;
     minPct = maxPct;
     maxPct = t;
   }
   if (speedMs < 5) speedMs = 5;
-
-  initFade(idx, percentToPwm(minPct), percentToPwm(maxPct), 1, speedMs);
+  uint8_t minV = percentToPwm(minPct);
+  uint8_t maxV = percentToPwm(maxPct);
+  // Evita reiniciar el fade cuando ya esta configurado igual.
+  if (fades[idx].min == minV && fades[idx].max == maxV && fades[idx].interval == speedMs) return;
+  initFade(idx, minV, maxV, 1, speedMs);
 }
 
 void setLedFadeInOutActive(uint8_t idx, bool active) {
   setFadeActive(idx, active);
+}
+
+void disableRandomFlashEffect(uint8_t idx) {
+  if (idx >= LED_COUNT) return;
+  randomFlashOn[idx] = false;
+  randomFlashEndAt[idx] = 0;
+  randomFlashNextCheckAt[idx] = 0;
+  randomFlashPeakPct[idx] = 0;
+}
+
+// Efecto general: LED tenue (basePct) con destellos altos aleatorios.
+void applyRandomFlashTenue(
+  uint8_t idx,
+  uint8_t basePct,
+  uint8_t flashMinPct,
+  uint8_t flashMaxPct,
+  unsigned long checkIntervalMs,
+  uint8_t chancePct,
+  unsigned long flashMinMs,
+  unsigned long flashMaxMs
+) {
+  if (idx >= LED_COUNT) return;
+  basePct = constrain(basePct, 0, 100);
+  flashMinPct = constrain(flashMinPct, 1, 100);
+  flashMaxPct = constrain(flashMaxPct, 1, 100);
+  if (flashMinPct > flashMaxPct) {
+    uint8_t t = flashMinPct;
+    flashMinPct = flashMaxPct;
+    flashMaxPct = t;
+  }
+  if (checkIntervalMs < 20) checkIntervalMs = 20;
+  chancePct = constrain(chancePct, 1, 100);
+  if (flashMinMs < 20) flashMinMs = 20;
+  if (flashMaxMs < flashMinMs) flashMaxMs = flashMinMs;
+
+  unsigned long now = millis();
+
+  if (randomFlashOn[idx]) {
+    if (now >= randomFlashEndAt[idx]) {
+      randomFlashOn[idx] = false;
+      setLedStaticPercent(idx, basePct);
+      return;
+    }
+    setLedStaticPercent(idx, randomFlashPeakPct[idx]);
+    return;
+  }
+
+  if (now >= randomFlashNextCheckAt[idx]) {
+    randomFlashNextCheckAt[idx] = now + checkIntervalMs;
+    if (random(0, 100) < chancePct) {
+      randomFlashOn[idx] = true;
+      randomFlashPeakPct[idx] = (uint8_t)random(flashMinPct, flashMaxPct + 1);
+      randomFlashEndAt[idx] = now + random(flashMinMs, flashMaxMs + 1);
+      setLedStaticPercent(idx, randomFlashPeakPct[idx]);
+      return;
+    }
+  }
+
+  setLedStaticPercent(idx, basePct);
 }
 
 // Efecto respiracion devocional: CARA lidera, ATRA sigue con desfase e intensidad relativa.
@@ -190,6 +267,71 @@ void applyDevotionalBreathing(uint8_t caraMinPct, uint8_t caraMaxPct, unsigned l
   setLedStaticPercent(5, atraPct); // ATRA
 }
 
+// Respiracion suave para un LED individual (0..5), por porcentaje.
+void applySingleBreathing(uint8_t idx, uint8_t minPct, uint8_t maxPct, unsigned long periodMs) {
+  if (idx >= LED_COUNT) return;
+  minPct = constrain(minPct, 1, 100);
+  maxPct = constrain(maxPct, 1, 100);
+  if (minPct > maxPct) {
+    uint8_t t = minPct;
+    minPct = maxPct;
+    maxPct = t;
+  }
+  if (periodMs < 1000) periodMs = 1000;
+
+  auto trianglePct = [](unsigned long tMs, unsigned long pMs) -> uint8_t {
+    unsigned long ph = tMs % pMs;
+    unsigned long half = pMs / 2;
+    if (ph < half) return (uint8_t)((ph * 100UL) / half); // 0..100
+    return (uint8_t)(((pMs - ph) * 100UL) / half);         // 100..0
+  };
+
+  uint8_t wave = trianglePct(millis(), periodMs);
+  uint8_t span = maxPct - minPct;
+  uint8_t pct = minPct + (uint8_t)((span * wave) / 100UL);
+  setLedStaticPercent(idx, pct);
+}
+
+// Efecto "ola de mar" circular para Modo 6 base:
+// Fase A: ATRA sube mientras FIZO+FDEP bajan.
+// Fase B: FIZO+FDEP suben juntos mientras ATRA baja.
+void applySeaWaveCircularMode6Base(
+  uint8_t atraMinPct,
+  uint8_t atraMaxPct,
+  uint8_t grupoMinPct,
+  uint8_t grupoMaxPct,
+  unsigned long periodMs
+) {
+  atraMinPct = constrain(atraMinPct, 0, 100);
+  atraMaxPct = constrain(atraMaxPct, 0, 100);
+  grupoMinPct = constrain(grupoMinPct, 0, 100);
+  grupoMaxPct = constrain(grupoMaxPct, 0, 100);
+  if (atraMinPct > atraMaxPct) { uint8_t t = atraMinPct; atraMinPct = atraMaxPct; atraMaxPct = t; }
+  if (grupoMinPct > grupoMaxPct) { uint8_t t = grupoMinPct; grupoMinPct = grupoMaxPct; grupoMaxPct = t; }
+  if (periodMs < 1200) periodMs = 1200;
+
+  auto trianglePct = [](unsigned long tMs, unsigned long pMs) -> uint8_t {
+    unsigned long ph = tMs % pMs;
+    unsigned long half = pMs / 2;
+    if (ph < half) return (uint8_t)((ph * 100UL) / half); // 0..100
+    return (uint8_t)(((pMs - ph) * 100UL) / half);         // 100..0
+  };
+
+  unsigned long now = millis();
+  uint8_t waveAtra = trianglePct(now, periodMs);
+  uint8_t waveGrupo = trianglePct(now + (periodMs / 2), periodMs); // opuesto
+
+  uint8_t atraSpan = atraMaxPct - atraMinPct;
+  uint8_t grupoSpan = grupoMaxPct - grupoMinPct;
+
+  uint8_t atraPct = atraMinPct + (uint8_t)((atraSpan * waveAtra) / 100UL);
+  uint8_t grupoPct = grupoMinPct + (uint8_t)((grupoSpan * waveGrupo) / 100UL);
+
+  setLedStaticPercent(5, atraPct);  // ATRA lider
+  setLedStaticPercent(3, grupoPct); // FIZO
+  setLedStaticPercent(4, grupoPct); // FDEP (junto con FIZO)
+}
+
 void setLedName(uint8_t index, const char* name) {
   if (index >= LED_COUNT) return;
   ledNames[index] = String(name);
@@ -202,6 +344,7 @@ const char* getLedName(uint8_t index) {
 
 void allLedsOff() {
   for (uint8_t i = 0; i < LED_COUNT; i++) {
+    disableRandomFlashEffect(i);
     setLedState(i, 0);
   }
 }
@@ -229,10 +372,88 @@ void describeCurrentMode(Mode m) {
     case MODE_4_CANDELITA_PASTOR_VIRGEN: Serial.println(F("4 - CANDELITA + PASTOR + VIRGEN")); break;
     case MODE_5_CANDELITA_PASTOR_VIRGEN_CARA: Serial.println(F("5 - VIRGEN SOLO CARA")); break;
     case MODE_6_ENFASIS_VIRGEN: Serial.println(F("6 - ENFASIS VIRGEN")); break;
-    case MODE_7_ENFASIS_VIRGEN_PASTOR: Serial.println(F("7 - ENFASIS VIRGEN + PASTOR")); break;
-    case MODE_8_SUAVE: Serial.println(F("8 - SUAVE")); break;
-    case MODE_9_SUPER_ACTIVO: Serial.println(F("9 - SUPER ACTIVO")); break;
     default: Serial.println(F("DESCONOCIDO")); break;
+  }
+}
+
+void printModeProfile(Mode m, bool movement) {
+  Serial.println(movement ? F("PERFIL MOVIMIENTO (30s)") : F("PERFIL BASE"));
+  switch (m) {
+    case MODE_1_APAGADO:
+      Serial.println(F(" CAN1/CAN2: OFF"));
+      Serial.println(F(" CARA/FIZO/FDEP/ATRA: OFF"));
+      break;
+
+    case MODE_2_SOLO_CANDELITA:
+      if (movement) {
+        Serial.println(F(" CAN1/CAN2: Candelita 70% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Fade 40%-60%"));
+        Serial.println(F(" FIZO/FDEP/ATRA: OFF"));
+      } else {
+        Serial.println(F(" CAN1/CAN2: Candelita 20% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 5%"));
+        Serial.println(F(" FIZO/FDEP/ATRA: OFF"));
+      }
+      break;
+
+    case MODE_3_CANDELITA_PASTOR:
+      if (movement) {
+        Serial.println(F(" CAN1/CAN2: Candelita 90% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 50%"));
+        Serial.println(F(" FIZO: Estatico 10%"));
+        Serial.println(F(" FDEP: Fade 5%-100% (vel media)"));
+        Serial.println(F(" ATRA: OFF"));
+      } else {
+        Serial.println(F(" CAN1/CAN2: Candelita 70% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 10%"));
+        Serial.println(F(" FIZO: Respiracion suave 10%-50%"));
+        Serial.println(F(" FDEP: Estatico 40%"));
+        Serial.println(F(" ATRA: OFF"));
+      }
+      break;
+
+    case MODE_4_CANDELITA_PASTOR_VIRGEN:
+      if (movement) {
+        Serial.println(F(" CAN1/CAN2: Candelita 90% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 40%"));
+        Serial.println(F(" FIZO/FDEP: Estatico 80%"));
+        Serial.println(F(" ATRA: Fade 0%-100%"));
+      } else {
+        Serial.println(F(" CAN1/CAN2: Candelita 70% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 10%"));
+        Serial.println(F(" FIZO/FDEP/ATRA: Tenue 10% + destello aleatorio"));
+      }
+      break;
+
+    case MODE_5_CANDELITA_PASTOR_VIRGEN_CARA:
+      if (movement) {
+        Serial.println(F(" CAN1/CAN2: Candelita 80% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Fade 40%-90%"));
+        Serial.println(F(" FIZO/FDEP/ATRA: Fade 0%-5% (medio-rapido)"));
+      } else {
+        Serial.println(F(" CAN1/CAN2: Candelita 70% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 40%"));
+        Serial.println(F(" FIZO/FDEP/ATRA: Estatico 10%"));
+      }
+      break;
+
+    case MODE_6_ENFASIS_VIRGEN:
+      if (movement) {
+        Serial.println(F(" CAN1/CAN2: Candelita 100% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA+ATRA: Respiracion devocional 40%-80% (ATRA desfasado/tenue)"));
+        Serial.println(F(" FIZO/FDEP: Estatico 30%"));
+      } else {
+        Serial.println(F(" CAN1/CAN2: Candelita 70% (CAN2 con 20% menos tope)"));
+        Serial.println(F(" CARA: Estatico 60%"));
+        Serial.println(F(" OLA MAR circular: ATRA <-> (FIZO+FDEP) juntos"));
+        Serial.println(F(" ATRA: Oscila 10%-30%"));
+        Serial.println(F(" FIZO/FDEP: Oscilan 8%-24% (sincronizados)"));
+      }
+      break;
+
+    default:
+      Serial.println(F(" Perfil no definido"));
+      break;
   }
 }
 
@@ -258,64 +479,40 @@ void printModeSnapshot() {
     case MODE_2_SOLO_CANDELITA:
       baseValues[0] = 51;  moveValues[0] = 178;
       baseValues[1] = 51;  moveValues[1] = 178;
-      baseValues[2] = 0;   moveValues[2] = 127;
+      baseValues[2] = 13;  moveValues[2] = 127;
       for(int i=3; i<6; i++) { baseValues[i] = 0; moveValues[i] = 0; }
       break;
     case MODE_3_CANDELITA_PASTOR:
       baseValues[0] = 178; moveValues[0] = 230;
       baseValues[1] = 178; moveValues[1] = 230;
-      baseValues[2] = 25;  moveValues[2] = 76;
-      baseValues[3] = 178; moveValues[3] = 204;
-      baseValues[4] = 0;   moveValues[4] = 0;
+      baseValues[2] = 25;  moveValues[2] = 127;
+      baseValues[3] = 127; moveValues[3] = 25;
+      baseValues[4] = 102; moveValues[4] = 255;
       baseValues[5] = 0;   moveValues[5] = 0;
       break;
     case MODE_4_CANDELITA_PASTOR_VIRGEN:
       baseValues[0] = 178; moveValues[0] = 230;
       baseValues[1] = 178; moveValues[1] = 230;
       baseValues[2] = 25;  moveValues[2] = 102;
-      baseValues[3] = 153; moveValues[3] = 204;
-      baseValues[4] = 153; moveValues[4] = 204;
-      baseValues[5] = 178; moveValues[5] = 204;
+      baseValues[3] = 25;  moveValues[3] = 204;
+      baseValues[4] = 25;  moveValues[4] = 204;
+      baseValues[5] = 25;  moveValues[5] = 127; // ATRA fade 0-100% (valor medio)
       break;
     case MODE_5_CANDELITA_PASTOR_VIRGEN_CARA:
-      baseValues[0] = 178; moveValues[0] = 178;
-      baseValues[1] = 178; moveValues[1] = 178;
+      baseValues[0] = 178; moveValues[0] = 204;
+      baseValues[1] = 178; moveValues[1] = 204;
       baseValues[2] = 102; moveValues[2] = 204;
-      baseValues[3] = 25;  moveValues[3] = 25;
-      baseValues[4] = 25;  moveValues[4] = 25;
-      baseValues[5] = 25;  moveValues[5] = 204;
+      baseValues[3] = 25;  moveValues[3] = 6;   // FIZO fade 0-5% (valor medio)
+      baseValues[4] = 25;  moveValues[4] = 6;   // FDEP fade 0-5% (valor medio)
+      baseValues[5] = 25;  moveValues[5] = 6;   // ATRA fade 0-5% (valor medio)
       break;
     case MODE_6_ENFASIS_VIRGEN:
       baseValues[0] = 178; moveValues[0] = 255;
       baseValues[1] = 178; moveValues[1] = 255;
-      baseValues[2] = 204; moveValues[2] = 255;
-      baseValues[3] = 51;  moveValues[3] = 76;
-      baseValues[4] = 51;  moveValues[4] = 76;
-      baseValues[5] = 127; moveValues[5] = 204;
-      break;
-    case MODE_7_ENFASIS_VIRGEN_PASTOR:
-      baseValues[0] = 178; moveValues[0] = 255;
-      baseValues[1] = 178; moveValues[1] = 255;
-      baseValues[2] = 178; moveValues[2] = 229;
-      baseValues[3] = 178; moveValues[3] = 229;
-      baseValues[4] = 178; moveValues[4] = 229;
-      baseValues[5] = 102; moveValues[5] = 204;
-      break;
-    case MODE_8_SUAVE:
-      baseValues[0] = 127; moveValues[0] = 178;
-      baseValues[1] = 127; moveValues[1] = 178;
-      baseValues[2] = 76;  moveValues[2] = 102;
-      baseValues[3] = 76;  moveValues[3] = 127;
-      baseValues[4] = 76;  moveValues[4] = 127;
-      baseValues[5] = 102; moveValues[5] = 71;
-      break;
-    case MODE_9_SUPER_ACTIVO:
-      baseValues[0] = 204; moveValues[0] = 255;
-      baseValues[1] = 204; moveValues[1] = 255;
-      baseValues[2] = 178; moveValues[2] = 255;
-      baseValues[3] = 204; moveValues[3] = 255;
-      baseValues[4] = 204; moveValues[4] = 255;
-      baseValues[5] = 204; moveValues[5] = 255;
+      baseValues[2] = 153; moveValues[2] = 153;
+      baseValues[3] = 41;  moveValues[3] = 76; // FIZO ola mar 8-24% (valor medio)
+      baseValues[4] = 41;  moveValues[4] = 76; // FDEP ola mar 8-24% (valor medio)
+      baseValues[5] = 51;  moveValues[5] = 89; // ATRA ola mar 10-30% (valor medio)
       break;
     default:
       for(int i=0; i<6; i++) { baseValues[i] = 0; moveValues[i] = 0; }
@@ -338,6 +535,10 @@ void printModeSnapshot() {
     Serial.println(moveValues[i]);
   }
 
+  Serial.println(F("------------------------------------------"));
+  printModeProfile(currentMode, false);
+  Serial.println(F("------------------------------------------"));
+  printModeProfile(currentMode, true);
   Serial.println(F("=========================================="));
 }
 
@@ -455,8 +656,11 @@ void updateSoftOffs() {
 // ==============================================================================
 
 void applyMode() {
-  unsigned long now = millis();
   bool movementActive = inMovementMode;
+  // Por defecto, FIZO/FDEP/ATRA no hacen fade; se habilita solo donde aplique.
+  setLedFadeInOutActive(3, false);
+  setLedFadeInOutActive(4, false);
+  setLedFadeInOutActive(5, false);
   
   switch (currentMode) {
     
@@ -467,11 +671,12 @@ void applyMode() {
     case MODE_2_SOLO_CANDELITA:
       if (movementActive) {
         updateCandleFlicker(178); // CAN ~70% during movimiento
+        configureLedFadeInOutPercent(2, DEFAULT_CARA_MIN_PCT, DEFAULT_CARA_MAX_PCT, DEFAULT_CARA_SPEED_MS);
         setLedFadeInOutActive(2, true); // enable CARA fade
       } else {
         updateCandleFlicker(51);  // CAN ~20% base
         setLedFadeInOutActive(2, false);
-        setLedState(2, 0);
+        setLedStaticPercent(2, 5); // CARA ~5% en reposo
       }
       setLedState(3, 0);
       setLedState(4, 0);
@@ -481,42 +686,52 @@ void applyMode() {
     case MODE_3_CANDELITA_PASTOR:
       if (movementActive) {
         updateCandleFlicker(230); // candelita ~90%
-        setLedStaticPercent(2, 30); // CARA
-        setLedStaticPercent(3, 80); // FIZO
+        setLedStaticPercent(2, 50); // CARA
+        setLedFadeInOutActive(4, true); // FDEP fade in/out
+        setLedState(3, percentToPwm(10)); // FIZO fijo 10% (forzado)
+        // FDEP se actualiza por fade activo (0..100%)
       } else {
         updateCandleFlicker(178); // candelita ~70%
         setLedStaticPercent(2, 10); // CARA
-        setLedStaticPercent(3, 70); // FIZO
+        applySingleBreathing(3, 10, 50, 4200); // FIZO respiracion devocional hasta 50%
+        setLedStaticPercent(4, 40); // FDEP
       }
-      setLedState(4, 0);
       setLedState(5, 0);
       break;
     
     case MODE_4_CANDELITA_PASTOR_VIRGEN:
       if (movementActive) {
         updateCandleFlicker(230); // CAN ~90%
+        disableRandomFlashEffect(3); // FIZO
+        disableRandomFlashEffect(4); // FDEP
+        disableRandomFlashEffect(5); // ATRA
         setLedStaticPercent(2, 40); // CARA
         setLedStaticPercent(3, 80); // FIZO
         setLedStaticPercent(4, 80); // FDEP
-        setLedStaticPercent(5, 80); // ATRA
+        setLedFadeInOutActive(5, true); // ATRA fade in/out
       } else {
         updateCandleFlicker(178); // CAN ~70%
         setLedStaticPercent(2, 10); // CARA
-        setLedStaticPercent(3, 60); // FIZO
-        setLedStaticPercent(4, 60); // FDEP
-        setLedStaticPercent(5, 70); // ATRA
+        applyRandomFlashTenue(3, 10, 60, 100, 120, 18, 50, 130); // FIZO
+        applyRandomFlashTenue(4, 10, 60, 100, 140, 16, 50, 130); // FDEP
+        applyRandomFlashTenue(5, 10, 55, 95, 160, 14, 60, 150);  // ATRA
       }
       break;
     
     case MODE_5_CANDELITA_PASTOR_VIRGEN_CARA:
       if (movementActive) {
-        updateCandleFlicker(178); // CAN ~70%
-        setLedStaticPercent(2, 80); // CARA
-        setLedStaticPercent(3, 10); // FIZO
-        setLedStaticPercent(4, 10); // FDEP
-        setLedStaticPercent(5, 80); // ATRA
+        updateCandleFlicker(204); // CAN ~80%
+        configureLedFadeInOutPercent(2, MODE5_CARA_MIN_PCT, MODE5_CARA_MAX_PCT, MODE5_CARA_SPEED_MS);
+        setLedFadeInOutActive(2, true); // CARA fade 40%..90%
+        configureLedFadeInOutPercent(3, MODE5_FIZO_FDEP_MIN_PCT, MODE5_FIZO_FDEP_MAX_PCT, MODE5_FIZO_FDEP_SPEED_MS);
+        configureLedFadeInOutPercent(4, MODE5_FIZO_FDEP_MIN_PCT, MODE5_FIZO_FDEP_MAX_PCT, MODE5_FIZO_FDEP_SPEED_MS);
+        configureLedFadeInOutPercent(5, MODE5_FIZO_FDEP_MIN_PCT, MODE5_FIZO_FDEP_MAX_PCT, MODE5_FIZO_FDEP_SPEED_MS);
+        setLedFadeInOutActive(3, true); // FIZO fade 0%..5%
+        setLedFadeInOutActive(4, true); // FDEP fade 0%..5%
+        setLedFadeInOutActive(5, true); // ATRA fade 0%..5%
       } else {
         updateCandleFlicker(178); // CAN ~70%
+        setLedFadeInOutActive(2, false);
         setLedStaticPercent(2, 40); // CARA
         setLedStaticPercent(3, 10); // FIZO
         setLedStaticPercent(4, 10); // FDEP
@@ -527,70 +742,23 @@ void applyMode() {
     case MODE_6_ENFASIS_VIRGEN:
       if (movementActive) {
         updateCandleFlicker(255); // CAN ~100%
-        setLedStaticPercent(2, 100); // CARA
+        applyDevotionalBreathing(40, 80, 4200, 450, 70); // CARA + ATRA
         setLedStaticPercent(3, 30);  // FIZO
         setLedStaticPercent(4, 30);  // FDEP
-        setLedStaticPercent(5, 80);  // ATRA
       } else {
         updateCandleFlicker(178); // CAN ~70%
-        setLedStaticPercent(2, 80); // CARA
-        setLedStaticPercent(3, 20); // FIZO
-        setLedStaticPercent(4, 20); // FDEP
-        setLedStaticPercent(5, 50); // ATRA
-      }
-      break;
-    
-    case MODE_7_ENFASIS_VIRGEN_PASTOR:
-      if (movementActive) {
-        updateCandleFlicker(255); // CAN ~100%
-        setLedStaticPercent(2, 90); // CARA
-        setLedStaticPercent(3, 90); // FIZO
-        setLedStaticPercent(4, 90); // FDEP
-        setLedStaticPercent(5, 80); // ATRA
-      } else {
-        updateCandleFlicker(178); // CAN ~70%
-        setLedStaticPercent(2, 70); // CARA
-        setLedStaticPercent(3, 70); // FIZO
-        setLedStaticPercent(4, 70); // FDEP
-        setLedStaticPercent(5, 40); // ATRA
-      }
-      break;
-    
-    case MODE_8_SUAVE:
-      if (movementActive) {
-        updateCandleFlicker(178); // CAN ~70%
-        applyDevotionalBreathing(
-          DEVOTIONAL_BREATH_CARA_MIN_PCT,
-          DEVOTIONAL_BREATH_CARA_MAX_PCT,
-          DEVOTIONAL_BREATH_PERIOD_MS,
-          DEVOTIONAL_BREATH_DELAY_MS,
-          DEVOTIONAL_BREATH_ATRA_SCALE_PCT
+        setLedStaticPercent(2, 60); // CARA
+        applySeaWaveCircularMode6Base(
+          MODE6_OLA_ATRA_MIN_PCT,
+          MODE6_OLA_ATRA_MAX_PCT,
+          MODE6_OLA_GRUPO_MIN_PCT,
+          MODE6_OLA_GRUPO_MAX_PCT,
+          MODE6_OLA_PERIOD_MS
         );
-        setLedStaticPercent(3, 50); // FIZO
-        setLedStaticPercent(4, 50); // FDEP
-      } else {
-        updateCandleFlicker(127); // CAN ~50%
-        setLedStaticPercent(2, 30); // CARA
-        setLedStaticPercent(3, 30); // FIZO
-        setLedStaticPercent(4, 30); // FDEP
-        setLedStaticPercent(5, 40); // ATRA
       }
       break;
-    
-    case MODE_9_SUPER_ACTIVO:
-      if (movementActive) {
-        updateCandleFlicker(255); // CAN ~100%
-        setLedStaticPercent(2, 100); // CARA
-        setLedStaticPercent(3, 100); // FIZO
-        setLedStaticPercent(4, 100); // FDEP
-        setLedStaticPercent(5, 100); // ATRA
-      } else {
-        updateCandleFlicker(204); // CAN ~80%
-        setLedStaticPercent(2, 70); // CARA
-        setLedStaticPercent(3, 80); // FIZO
-        setLedStaticPercent(4, 80); // FDEP
-        setLedStaticPercent(5, 80); // ATRA
-      }
+
+    default:
       break;
   }
 }
@@ -602,7 +770,7 @@ void applyMode() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println(F("\n=== VIRGO CITA LUCES - 9 MODOS ==="));
+  Serial.println(F("\n=== VIRGO CITA LUCES - 6 MODOS ==="));
   
   pinMode(BTN_PIN, INPUT_PULLUP);
   pinMode(PIR_PIN, INPUT);
@@ -627,6 +795,10 @@ void setup() {
   printLedNames();
   // Inicializar FADE IN/OUT reutilizable para CARA (indice 2)
   configureLedFadeInOutPercent(2, DEFAULT_CARA_MIN_PCT, DEFAULT_CARA_MAX_PCT, DEFAULT_CARA_SPEED_MS);
+  // Inicializar FADE IN/OUT reutilizable para FDEP (indice 4)
+  configureLedFadeInOutPercent(4, DEFAULT_FDEP_MIN_PCT, DEFAULT_FDEP_MAX_PCT, DEFAULT_FDEP_SPEED_MS);
+  // Inicializar FADE IN/OUT reutilizable para ATRA en Modo 4 movimiento (indice 5)
+  configureLedFadeInOutPercent(5, DEFAULT_ATRA_M4_MIN_PCT, DEFAULT_ATRA_M4_MAX_PCT, DEFAULT_ATRA_M4_SPEED_MS);
   
   Serial.println(F("\nModos disponibles:"));
   Serial.println(F("  1. APAGADO"));
@@ -635,9 +807,6 @@ void setup() {
   Serial.println(F("  4. CANDELITA + PASTOR + VIRGEN"));
   Serial.println(F("  5. CANDELITA + PASTOR + VIRGEN SOLO CARA"));
   Serial.println(F("  6. ENFASIS VIRGEN"));
-  Serial.println(F("  7. ENFASIS VIRGEN + PASTOR"));
-  Serial.println(F("  8. SUAVE"));
-  Serial.println(F("  9. SUPER ACTIVO"));
   Serial.println(F("\nPulsa el boton para cambiar modo."));
   Serial.println(F("Movimiento detectable por PIR (D4)."));
   
@@ -678,7 +847,8 @@ void loop() {
     if (!inMovementMode) {
       lastMotionTime = now;
       inMovementMode = true;
-      Serial.println(F(">>> MOVIMIENTO DETECTADO <<<"));
+      Serial.println(F(">>> MOVIMIENTO DETECTADO: SUBMODO ACTIVO 30s <<<"));
+      printModeProfile(currentMode, true);
     } else {
       Serial.println(F(">>> PIR ALTO (ignorado, submodo activo) <<<"));
     }
@@ -693,6 +863,7 @@ void loop() {
   if (inMovementMode && (now - lastMotionTime >= MOVEMENT_TIMEOUT_MS)) {
     Serial.println(F(">>> Timeout de movimiento (volviendo a modo base) <<<"));
     inMovementMode = false;
+    printModeProfile(currentMode, false);
   }
   
   // ==== APLICAR MODO ====
